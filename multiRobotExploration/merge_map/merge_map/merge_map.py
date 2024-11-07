@@ -7,17 +7,19 @@ from tf2_ros import Buffer, TransformListener
 import tf2_ros
 from rclpy.time import Time
 import math
+from scipy import ndimage
 
-def merge_maps(*maps, map_size=40.0, origin_offset=-20.0, robot_positions=None):
+def merge_maps(*maps, map_size=40.0, origin_offset=-20.0, robot_positions=None, dilation_size=3):
     """
-    Merge multiple maps and mark robot positions
+    Merge multiple maps, mark robot positions and apply dilation
     Args:
         *maps: Variable number of OccupancyGrid maps
         map_size: Size of the map in meters
         origin_offset: Offset of the origin from the map edge
         robot_positions: List of robot positions (x, y)
+        dilation_size: Size of the dilation kernel (odd number)
     Returns:
-        merged_map: Combined OccupancyGrid map with robot positions marked
+        merged_map: Combined OccupancyGrid map with robot positions marked and obstacles dilated
     """
     if not maps:
         return None
@@ -58,6 +60,25 @@ def merge_maps(*maps, map_size=40.0, origin_offset=-20.0, robot_positions=None):
                     elif (merged_map.data[merged_i] == 0 and map_data.data[i] == 100) or \
                          (merged_map.data[merged_i] == 100 and map_data.data[i] == 0):
                         merged_map.data[merged_i] = 100
+
+    # Convert to numpy array for dilation
+    map_array = np.array(merged_map.data).reshape(merged_map.info.height, merged_map.info.width)
+    
+    # Create binary obstacle map (1 for obstacles, 0 for free space)
+    obstacle_map = (map_array == 100).astype(np.uint8)
+    
+    # Create dilation kernel
+    kernel = np.ones((dilation_size, dilation_size), np.uint8)
+    
+    # Apply dilation
+    dilated_obstacles = ndimage.binary_dilation(obstacle_map, kernel).astype(np.uint8)
+    
+    # Convert back to occupancy grid format
+    dilated_map = map_array.copy()
+    dilated_map[dilated_obstacles == 1] = 100
+    
+    # Convert back to list
+    merged_map.data = dilated_map.flatten().tolist()
     
     # Mark robot positions on the map
     if robot_positions:
@@ -97,10 +118,12 @@ class MergeMapNode(Node):
         # Declare parameters
         self.declare_parameter('map_size', 40.0)
         self.declare_parameter('origin_offset', -20.0)
+        self.declare_parameter('dilation_size', 3)  # New parameter for dilation
         
         # Get parameters
         self.map_size = self.get_parameter('map_size').value
         self.origin_offset = self.get_parameter('origin_offset').value
+        self.dilation_size = self.get_parameter('dilation_size').value
         
         # Create publisher for merged map
         self.publisher = self.create_publisher(OccupancyGrid, '/merge_map', 10)
@@ -125,7 +148,7 @@ class MergeMapNode(Node):
         # Create timer for periodic map merging
         self.timer = self.create_timer(1.0, self.merge_and_publish)
         
-        self.get_logger().info('Map merge node initialized with TF listener')
+        self.get_logger().info('Map merge node initialized with TF listener and dilation')
 
     def map1_callback(self, msg):
         self.map1 = msg
@@ -141,10 +164,9 @@ class MergeMapNode(Node):
         Get robot position from TF
         """
         try:
-            # 從機器人自己的map frame獲取位置
             transform = self.tf_buffer.lookup_transform(
-                f'{robot_name}/map',                    # source frame
-                f'{robot_name}/base_footprint',         # target frame
+                f'{robot_name}/map',
+                f'{robot_name}/base_footprint',
                 Time(),
                 timeout=rclpy.duration.Duration(seconds=1.0))
             
@@ -152,8 +174,7 @@ class MergeMapNode(Node):
             pos.x = transform.transform.translation.x
             pos.y = transform.transform.translation.y
             pos.z = transform.transform.translation.z
-
-            # 添加日誌輸出以查看位置
+            
             self.get_logger().info(f'{robot_name} position: x={pos.x:.2f}, y={pos.y:.2f}')
             
             return pos
@@ -167,7 +188,6 @@ class MergeMapNode(Node):
         Periodically merge maps and add robot positions from TF
         """
         if self.map1 is not None and self.map2 is not None and self.map3 is not None:
-            # Get robot positions from TF
             robot_positions = [
                 self.get_robot_position('tb3_0'),
                 self.get_robot_position('tb3_1'),
@@ -180,14 +200,14 @@ class MergeMapNode(Node):
                 self.map3, 
                 map_size=self.map_size,
                 origin_offset=self.origin_offset,
-                robot_positions=robot_positions
+                robot_positions=robot_positions,
+                dilation_size=self.dilation_size  # Add dilation size parameter
             )
             
             if merged_map is not None:
-                # Add timestamp
                 merged_map.header.stamp = self.get_clock().now().to_msg()
                 self.publisher.publish(merged_map)
-                self.get_logger().debug('Published merged map with robot positions from TF')
+                self.get_logger().debug('Published merged map with robot positions and dilation')
 
 def main(args=None):
     rclpy.init(args=args)
