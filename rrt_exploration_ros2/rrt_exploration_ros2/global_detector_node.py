@@ -76,7 +76,7 @@ class GlobalRRTDetector(Node):
         self.init_markers()
 
         # RRT迭代定时器
-        self.create_timer(0.01, self.rrt_iteration)
+        self.create_timer(0.005, self.rrt_iteration)
         
         self.get_logger().info('Global RRT detector initialized')
         self.get_logger().info('Waiting for map and boundary...')
@@ -289,6 +289,9 @@ class GlobalRRTDetector(Node):
                         
         return -1 if has_unknown else 1
 
+    
+
+
     def check_path(self, p1, p2):
         """检查路径是否有效"""
         if not self.mapData:
@@ -298,22 +301,71 @@ class GlobalRRTDetector(Node):
             return 0
 
         resolution = self.mapData.info.resolution
-        steps = int(np.ceil(np.linalg.norm(np.array(p2) - np.array(p1)) / (resolution * 0.5)))
-        
+        # 增加采样密度,使检测更精确
+        steps = int(np.ceil(np.linalg.norm(np.array(p2) - np.array(p1)) / (resolution * 0.1)))  # 提高采样密度
+    
+        # 路径上的所有点都必须是有效点
         for i in range(steps + 1):
             t = i / steps
             point = [
                 p1[0] + t * (p2[0] - p1[0]),
                 p1[1] + t * (p2[1] - p1[1])
             ]
-            
-            status = self.check_point(point)
-            if status == 0:
-                return 0  # 如果路径上有障碍物，直接返回无效
+        
+            if not self.is_valid_point(point):  # 新增方法检查点是否有效
+                return 0
                 
-        # 再次检查终点是否是frontier
-        end_status = self.check_point(p2)
-        return end_status  # 返回终点的状态
+        return self.check_point(p2)  # 只返回终点状态
+
+
+
+
+
+
+
+
+    def is_valid_point(self, point):
+        """检查点是否有效(不是障碍物且在地图范围内)"""
+        if not self.mapData or not self.is_point_in_boundary(point):
+            return False
+
+        resolution = self.mapData.info.resolution
+        origin_x = self.mapData.info.origin.position.x
+        origin_y = self.mapData.info.origin.position.y
+        width = self.mapData.info.width
+    
+        # 转换为地图坐标
+        x = int((point[0] - origin_x) / resolution)
+        y = int((point[1] - origin_y) / resolution)
+    
+        # 检查是否在地图范围内
+        if not (0 <= x < width and 0 <= y < self.mapData.info.height):
+            return False
+
+        # 获取该点的占据状态
+        cell_value = self.mapData.data[y * width + x]
+    
+        # 检查点周围的占据状态
+        safety_margin = 2  # 安全边际
+        for dx in range(-safety_margin, safety_margin + 1):
+            for dy in range(-safety_margin, safety_margin + 1):
+                nx = x + dx
+                ny = y + dy
+                if (0 <= nx < width and 0 <= ny < self.mapData.info.height):
+                    neighbor_value = self.mapData.data[ny * width + nx]
+                    # 如果点或其周围有障碍物,则认为无效
+                    if neighbor_value > 0:  # 障碍物
+                        return False
+                
+        return cell_value == 0  # 返回是否为自由空间
+
+
+
+
+
+
+
+
 
     def publish_tree(self, p1, p2, is_frontier=False):
         """发布RRT树的新边"""
@@ -386,10 +438,11 @@ class GlobalRRTDetector(Node):
                     np.random.uniform(self.init_y - self.init_map_y/2, 
                                     self.init_y + self.init_map_y/2)
                 ]
-                if self.is_point_in_boundary(x_rand):
+                # 确保随机点本身是有效的
+                if self.is_point_in_boundary(x_rand) and self.is_valid_point(x_rand):
                     break
                 attempts += 1
-            
+        
             if x_rand is None or attempts >= 100:
                 return
 
@@ -398,7 +451,7 @@ class GlobalRRTDetector(Node):
             dist = np.linalg.norm(V_array - np.array(x_rand).reshape(1, 2), axis=1)
             nearest_idx = np.argmin(dist)
             x_nearest = self.V[nearest_idx]
-            
+        
             # Steer
             dist = np.linalg.norm(np.array(x_rand) - np.array(x_nearest))
             if dist <= self.eta:
@@ -407,22 +460,27 @@ class GlobalRRTDetector(Node):
                 dir_vector = np.array(x_rand) - np.array(x_nearest)
                 x_new = (x_nearest + (dir_vector / dist) * self.eta).tolist()
 
-            # 检查路径
-            status = self.check_path(x_nearest, x_new)
+            # 检查新点是否有效
+            if not self.is_valid_point(x_new):
+                return
 
-            # 无论是否是frontier，都添加到树中
+            # 检查路径
+            path_status = self.check_path(x_nearest, x_new)
+            if path_status == 0:  # 如果路径无效,直接返回
+                return
+
+            # 只有当点和路径都有效时,才添加到树中
             self.V.append(x_new)
 
-            if status == -1:  # frontier点
+            if path_status == -1:  # frontier点
                 if self.is_new_frontier(x_new):
                     self.publish_frontier(x_new)
                 self.publish_tree(x_nearest, x_new, is_frontier=True)
-            elif status == 1:  # 自由空间
+            elif path_status == 1:  # 自由空间
                 self.publish_tree(x_nearest, x_new, is_frontier=False)
 
             # 管理树的大小
             if len(self.V) > self.MAX_VERTICES:
-                # 保留起始点和最新的点
                 self.V = self.V[:1] + self.V[-(self.MAX_VERTICES-1):]
 
         except Exception as e:
