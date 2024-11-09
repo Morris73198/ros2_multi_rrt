@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'boundary_node = rrt_exploration_ros2.boundary_node:main',
             'global_rrt_detector = rrt_exploration_ros2.global_detector_node:main',
+            'local_detector_node = rrt_exploration_ros2.local_detector_node:main',
         ],
     },
 )
