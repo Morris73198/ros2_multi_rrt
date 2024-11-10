@@ -32,7 +32,7 @@ def generate_launch_description():
         arguments=[
             '-entity', name1, 
             '-file', urdf_path1, 
-            '-x', '0.9', 
+            '-x', '5.9', 
             '-y', '3.3', 
             '-z', '0.01',
             '-robot_namespace', name1,
@@ -168,7 +168,7 @@ def generate_launch_description():
         arguments=[
             '-entity', name3, 
             '-file', urdf_path3, 
-            '-x', '0.9', 
+            '-x', '-5.9', 
             '-y', '2.5', 
             '-z', '0.01',
             '-robot_namespace', name3,
