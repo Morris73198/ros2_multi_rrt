@@ -17,11 +17,11 @@ class LocalRRTDetector(Node):
     def __init__(self):
         super().__init__('local_rrt_detector')
         
-        # 聲明參數
+        # 原有的參數聲明
         self.declare_parameter('eta', 1.0)
         self.declare_parameter('robot_frame', 'base_link')
         self.declare_parameter('robot_name', 'tb3_0')
-        self.declare_parameter('update_frequency', 10.0)  # 降低更新頻率
+        self.declare_parameter('update_frequency', 10.0)
         
         # 獲取參數
         self.eta = self.get_parameter('eta').value
@@ -30,18 +30,20 @@ class LocalRRTDetector(Node):
         self.update_frequency = self.get_parameter('update_frequency').value
         
         # 常數設置
-        self.MAX_VERTICES = 500  # 減少頂點數量
-        self.TF_TIMEOUT = 1.0  # TF 查詢超時時間(秒)
+        self.MAX_VERTICES = 500
+        self.TF_TIMEOUT = 1.0
+        self.MAX_FRONTIERS = 100  # 最大儲存的 frontier 數量
         
         # 初始化變量
         self.mapData = None
-        self.V = []  # RRT 頂點
-        self.parents = {}  # 記錄樹的結構 {子節點: 父節點}
+        self.V = []
+        self.parents = {}
         self.init_map_x = 0.0
         self.init_map_y = 0.0
         self.init_x = 0.0
         self.init_y = 0.0
         self.tf_ready = False
+        self.frontiers = []  # 儲存所有找到的 frontiers
         
         # 設置 TF
         self.tf_buffer = tf2_ros.Buffer(cache_time=rclpy.duration.Duration(seconds=30.0))
@@ -57,6 +59,13 @@ class LocalRRTDetector(Node):
         self.marker_pub = self.create_publisher(
             Marker,
             f'/{self.robot_name}/local_rrt_markers',
+            10
+        )
+        
+        # 新增：Frontier MarkerArray 發布器
+        self.frontier_markers_pub = self.create_publisher(
+            MarkerArray,
+            f'/{self.robot_name}/frontier_markers',
             10
         )
         
@@ -78,71 +87,15 @@ class LocalRRTDetector(Node):
         # 初始化可視化標記
         self.points_marker = self.create_points_marker()
         self.line_marker = self.create_line_marker()
+        self.frontier_marker_array = MarkerArray()
         
         # 創建定時器
         self.create_timer(1.0 / self.update_frequency, self.rrt_iteration)
         self.create_timer(1.0, self.check_tf_available)
-        
-        # 創建定時器用於定期發布標記
         self.create_timer(0.1, self.publish_markers)
+        self.create_timer(0.1, self.publish_frontier_markers)  # 新增：發布 frontier markers
         
-        self.get_logger().info(f'Local RRT detector initialized for {self.robot_name}')
-        self.get_logger().info(f'Update frequency: {self.update_frequency} Hz')
-        self.get_logger().info('Using merged map for exploration')
-
-    def publish_markers(self):
-        """定期發布標記，使用實際的RRT結構"""
-        if self.V:
-            # 發布點標記
-            self.points_marker.points = []
-            for vertex in self.V:
-                p = Point()
-                p.x = vertex[0]
-                p.y = vertex[1]
-                p.z = 0.0
-                self.points_marker.points.append(p)
-            self.points_marker.header.stamp = self.get_clock().now().to_msg()
-            self.marker_pub.publish(self.points_marker)
-            
-            # 發布線標記（根據實際的樹結構）
-            if len(self.V) > 1:
-                self.line_marker.points = []
-                # 從每個點回溯到其父節點
-                for child_str, parent in self.parents.items():
-                    child = eval(child_str)  # 將字符串轉回列表
-                    
-                    # 添加父節點
-                    p1 = Point()
-                    p1.x = parent[0]
-                    p1.y = parent[1]
-                    p1.z = 0.0
-                    
-                    # 添加子節點
-                    p2 = Point()
-                    p2.x = child[0]
-                    p2.y = child[1]
-                    p2.z = 0.0
-                    
-                    self.line_marker.points.extend([p1, p2])
-                
-                self.line_marker.header.stamp = self.get_clock().now().to_msg()
-                self.marker_pub.publish(self.line_marker)
-
-    def check_tf_available(self):
-        """檢查 TF 是否可用"""
-        if not self.tf_ready:
-            try:
-                transform = self.tf_buffer.lookup_transform(
-                    f'{self.robot_name}/map',
-                    f'{self.robot_name}/base_footprint',
-                    rclpy.time.Time(seconds=0),
-                    timeout=rclpy.duration.Duration(seconds=0.1))
-                    
-                self.tf_ready = True
-                self.get_logger().info('TF transform is now available')
-                
-            except TransformException:
-                self.get_logger().debug('Waiting for TF transform to become available...')
+        self.get_logger().info('Local RRT detector initialized with frontier visualization')
 
     def create_points_marker(self):
         """創建點的可視化標記"""
@@ -202,6 +155,149 @@ class LocalRRTDetector(Node):
             
         marker.color.a = 0.6
         return marker
+
+    def publish_markers(self):
+        """定期發布標記，使用實際的RRT結構"""
+        if self.V:
+            # 發布點標記
+            self.points_marker.points = []
+            for vertex in self.V:
+                p = Point()
+                p.x = vertex[0]
+                p.y = vertex[1]
+                p.z = 0.0
+                self.points_marker.points.append(p)
+            self.points_marker.header.stamp = self.get_clock().now().to_msg()
+            self.marker_pub.publish(self.points_marker)
+            
+            # 發布線標記（根據實際的樹結構）
+            if len(self.V) > 1:
+                self.line_marker.points = []
+                # 從每個點回溯到其父節點
+                for child_str, parent in self.parents.items():
+                    child = eval(child_str)  # 將字符串轉回列表
+                    
+                    # 添加父節點
+                    p1 = Point()
+                    p1.x = parent[0]
+                    p1.y = parent[1]
+                    p1.z = 0.0
+                    
+                    # 添加子節點
+                    p2 = Point()
+                    p2.x = child[0]
+                    p2.y = child[1]
+                    p2.z = 0.0
+                    
+                    self.line_marker.points.extend([p1, p2])
+                
+                self.line_marker.header.stamp = self.get_clock().now().to_msg()
+                self.marker_pub.publish(self.line_marker)
+
+    def check_tf_available(self):
+        """檢查 TF 是否可用"""
+        if not self.tf_ready:
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    f'{self.robot_name}/map',
+                    f'{self.robot_name}/base_footprint',
+                    rclpy.time.Time(seconds=0),
+                    timeout=rclpy.duration.Duration(seconds=0.1))
+                    
+                self.tf_ready = True
+                self.get_logger().info('TF transform is now available')
+                
+            except TransformException:
+                self.get_logger().debug('Waiting for TF transform to become available...')
+
+    def create_frontier_marker(self, point, marker_id):
+        """創建單個 frontier 的標記"""
+        marker = Marker()
+        marker.header.frame_id = "merge_map"
+        marker.ns = f'{self.robot_name}_frontier'
+        marker.id = marker_id
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        
+        marker.pose.position.x = point[0]
+        marker.pose.position.y = point[1]
+        marker.pose.position.z = 0.0
+        marker.pose.orientation.w = 1.0
+        
+        marker.scale.x = 0.3
+        marker.scale.y = 0.3
+        marker.scale.z = 0.3
+        
+        # 根據機器人設置不同顏色
+        if self.robot_name == 'tb3_0':
+            marker.color.r = 1.0
+            marker.color.g = 0.0
+            marker.color.b = 0.0
+        elif self.robot_name == 'tb3_1':
+            marker.color.r = 0.0
+            marker.color.g = 1.0
+            marker.color.b = 0.0
+        else:  # tb3_2
+            marker.color.r = 0.0
+            marker.color.g = 0.0
+            marker.color.b = 1.0
+        
+        marker.color.a = 0.8
+        marker.lifetime = rclpy.duration.Duration(seconds=5.0).to_msg()  # 5秒後消失
+        
+        return marker
+
+    def publish_frontier_markers(self):
+        """發布所有 frontier 標記"""
+        if not self.frontiers:
+            return
+        
+        marker_array = MarkerArray()
+        
+        # 為每個 frontier 點創建標記
+        for i, frontier in enumerate(self.frontiers):
+            marker = self.create_frontier_marker(frontier, i)
+            marker.header.stamp = self.get_clock().now().to_msg()
+            marker_array.markers.append(marker)
+        
+        # 發布 marker array
+        self.frontier_markers_pub.publish(marker_array)
+
+    def add_frontier(self, point):
+        """添加新的 frontier 點"""
+        # 檢查是否與現有的 frontier 點太近
+        MIN_DISTANCE = 0.5  # 最小距離閾值（米）
+        
+        for existing_point in self.frontiers:
+            distance = np.linalg.norm(np.array(point) - np.array(existing_point))
+            if distance < MIN_DISTANCE:
+                return False
+        
+        # 添加新的 frontier 點
+        self.frontiers.append(point)
+        
+        # 如果超過最大數量，移除最舊的點
+        if len(self.frontiers) > self.MAX_FRONTIERS:
+            self.frontiers.pop(0)
+        
+        return True
+
+    def publish_frontier(self, point):
+        """發布 frontier 點"""
+        # 檢查並添加新的 frontier
+        if self.add_frontier(point):
+            msg = PointStamped()
+            msg.header.frame_id = "merge_map"
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.point.x = point[0]
+            msg.point.y = point[1]
+            msg.point.z = 0.0
+            self.frontier_pub.publish(msg)
+            
+            # 發布調試信息
+            debug_msg = String()
+            debug_msg.data = f'Found new frontier at: ({point[0]:.2f}, {point[1]:.2f})'
+            self.debug_publisher.publish(debug_msg)
 
     def map_callback(self, msg):
         """處理地圖數據"""
@@ -263,6 +359,7 @@ class LocalRRTDetector(Node):
             
         cell_value = self.mapData.data[y * width + x]
         
+        
         # 考慮機器人標記單元格 (50-80) 為有效
         return cell_value == 0 or (50 <= cell_value <= 80)
 
@@ -308,114 +405,90 @@ class LocalRRTDetector(Node):
             
         return 1
 
-    def publish_frontier(self, point):
-        """發布frontier點"""
-        msg = PointStamped()
-        msg.header.frame_id = "merge_map"  # 使用合併地圖的frame
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.point.x = point[0]
-        msg.point.y = point[1]
-        msg.point.z = 0.0
-        self.frontier_pub.publish(msg)
-        
-        # 發布調試信息
-        debug_msg = String()
-        debug_msg.data = f'Found frontier at: ({point[0]:.2f}, {point[1]:.2f})'
-        self.debug_publisher.publish(debug_msg)
-
     def rrt_iteration(self):
-       """執行一次RRT迭代"""
-       if not self.mapData or not self.tf_ready:
-           return
-           
-       try:
-           robot_pos = self.get_robot_position()
-           if not robot_pos:
-               return
-               
-           if not self.V:
-               self.V = [robot_pos]
-               self.parents = {}  # 重置父節點記錄
-               self.get_logger().info(f'Tree initialized at {robot_pos}')
-           
-           # 增加多次嘗試的機會
-           for _ in range(10):  # 每次迭代嘗試10次
-               # 在機器人周圍生成隨機點
-               angle = np.random.uniform(0, 2 * np.pi)
-               r = np.random.uniform(0, 5.0)  # 5米半徑
-               x_rand = [
-                   robot_pos[0] + r * np.cos(angle),
-                   robot_pos[1] + r * np.sin(angle)
-               ]
-               
-               # 如果隨機點不可用，繼續嘗試
-               if not self.is_valid_point(x_rand):
-                   continue
-               
-               # 找到最近的頂點
-               V_array = np.array(self.V)
-               dist = np.linalg.norm(V_array - np.array(x_rand), axis=1)
-               nearest_idx = np.argmin(dist)
-               x_nearest = self.V[nearest_idx]
-               
-               # 根據eta參數擴展樹
-               dist = np.linalg.norm(np.array(x_rand) - np.array(x_nearest))
-               if dist <= self.eta:
-                   x_new = x_rand
-               else:
-                   dir_vector = np.array(x_rand) - np.array(x_nearest)
-                   x_new = (x_nearest + (dir_vector / dist) * self.eta).tolist()
-               
-               # 檢查新點是否有效
-               if not self.is_valid_point(x_new):
-                   continue
-                   
-               # 檢查路徑狀態
-               path_status = self.check_path(x_nearest, x_new)
-               
-               if path_status == -1:  # 找到frontier
-                   self.get_logger().info(f'Found frontier point at {x_new}')
-                   self.publish_frontier(x_new)
-                   self.V = [robot_pos]  # 重置樹
-                   self.parents = {}  # 重置父節點記錄
-                   break
-                   
-               elif path_status == 1:  # 有效路徑
-                   self.V.append(x_new)
-                   # 記錄父子關係
-                   self.parents[str(x_new)] = x_nearest
-                   self.get_logger().info(f'Added new point to tree: {x_new}')
-                   break
-                   
-           # 控制樹的大小
-           if len(self.V) > self.MAX_VERTICES:
-               # 保留根節點和最新的節點
-               self.V = [robot_pos] + self.V[-(self.MAX_VERTICES-1):]
-               # 更新父節點記錄
-               new_parents = {}
-               for child_str, parent in self.parents.items():
-                   child = eval(child_str)
-                   if child in self.V and parent in self.V:
-                       new_parents[child_str] = parent
-               self.parents = new_parents
+        """執行一次RRT迭代"""
+        if not self.mapData or not self.tf_ready:
+            return
+            
+        try:
+            robot_pos = self.get_robot_position()
+            if not robot_pos:
+                return
+                
+            if not self.V:
+                self.V = [robot_pos]
+                self.parents = {}
+                self.get_logger().info(f'Tree initialized at {robot_pos}')
+            
+            # 增加多次嘗試的機會
+            for _ in range(10):
+                angle = np.random.uniform(0, 2 * np.pi)
+                r = np.random.uniform(0, 5.0)
+                x_rand = [
+                    robot_pos[0] + r * np.cos(angle),
+                    robot_pos[1] + r * np.sin(angle)
+                ]
+                
+                if not self.is_valid_point(x_rand):
+                    continue
+                
+                V_array = np.array(self.V)
+                dist = np.linalg.norm(V_array - np.array(x_rand), axis=1)
+                nearest_idx = np.argmin(dist)
+                x_nearest = self.V[nearest_idx]
+                
+                dist = np.linalg.norm(np.array(x_rand) - np.array(x_nearest))
+                if dist <= self.eta:
+                    x_new = x_rand
+                else:
+                    dir_vector = np.array(x_rand) - np.array(x_nearest)
+                    x_new = (x_nearest + (dir_vector / dist) * self.eta).tolist()
+                
+                if not self.is_valid_point(x_new):
+                    continue
+                    
+                path_status = self.check_path(x_nearest, x_new)
+                
+                if path_status == -1:  # 找到frontier
+                    self.get_logger().info(f'Found frontier point at {x_new}')
+                    self.publish_frontier(x_new)
+                    self.V = [robot_pos]  # 重置樹
+                    self.parents = {}  # 重置父節點記錄
+                    break
+                    
+                elif path_status == 1:  # 有效路徑
+                    self.V.append(x_new)
+                    self.parents[str(x_new)] = x_nearest
+                    self.get_logger().info(f'Added new point to tree: {x_new}')
+                    break
+                    
+            # 控制樹的大小
+            if len(self.V) > self.MAX_VERTICES:
+                self.V = [robot_pos] + self.V[-(self.MAX_VERTICES-1):]
+                new_parents = {}
+                for child_str, parent in self.parents.items():
+                    child = eval(child_str)
+                    if child in self.V and parent in self.V:
+                        new_parents[child_str] = parent
+                self.parents = new_parents
 
-       except Exception as e:
-           self.get_logger().error(f'RRT iteration error: {str(e)}')
-           traceback.print_exc()
+        except Exception as e:
+            self.get_logger().error(f'RRT iteration error: {str(e)}')
+            traceback.print_exc()
 
 def main(args=None):
-   rclpy.init(args=args)
-   try:
-       node = LocalRRTDetector()
-       rclpy.spin(node)
-   except KeyboardInterrupt:
-       pass
-   except Exception as e:
-       print(f'Caught exception: {str(e)}')
-       traceback.print_exc()
-   finally:
-       if rclpy.ok():
-           rclpy.shutdown()
+    rclpy.init(args=args)
+    try:
+        node = LocalRRTDetector()
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(f'Caught exception: {str(e)}')
+        traceback.print_exc()
+    finally:
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
-   main()
+    main()
