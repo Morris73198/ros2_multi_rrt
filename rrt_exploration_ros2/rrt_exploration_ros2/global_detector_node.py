@@ -166,7 +166,7 @@ class GlobalRRTDetector(Node):
         # 初始化 found frontiers marker array
         self.found_frontiers_markers = MarkerArray()
         self.found_marker = Marker()
-        self.found_marker.header.frame_id = 'map'
+        self.found_marker.header.frame_id = 'merge_map'
         self.found_marker.ns = "found_frontiers"
         self.found_marker.id = 0
         self.found_marker.type = Marker.SPHERE_LIST
@@ -176,7 +176,7 @@ class GlobalRRTDetector(Node):
         self.found_marker.scale.y = 0.2
         self.found_marker.scale.z = 0.2
         self.found_marker.color.r = 1.0
-        self.found_marker.color.g = 0.0
+        self.found_marker.color.g = 0.5
         self.found_marker.color.b = 0.0
         self.found_marker.color.a = 0.8
         self.found_marker.points = []
