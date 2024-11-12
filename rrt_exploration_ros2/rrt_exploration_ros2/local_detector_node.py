@@ -68,6 +68,20 @@ class LocalRRTDetector(Node):
             f'/{self.robot_name}/frontier_markers',
             10
         )
+
+
+        self.unified_frontier_pub = self.create_publisher(
+            MarkerArray,
+            '/found',
+            10
+        )
+
+
+
+
+
+
+
         
         # 調試發布器
         self.debug_publisher = self.create_publisher(
@@ -84,6 +98,51 @@ class LocalRRTDetector(Node):
             10
         )
         
+
+
+        # 初始化unified marker
+        self.unified_marker = Marker()
+        self.unified_marker.header.frame_id = "merge_map"
+        self.unified_marker.ns = f'{self.robot_name}_frontier'
+        self.unified_marker.id = 0
+        self.unified_marker.type = Marker.SPHERE_LIST
+        self.unified_marker.action = Marker.ADD
+        self.unified_marker.pose.orientation.w = 1.0
+        self.unified_marker.scale.x = 0.2
+        self.unified_marker.scale.y = 0.2
+        self.unified_marker.scale.z = 0.2
+        
+        # 根據機器人設置顏色
+        if self.robot_name == 'tb3_0':
+            self.unified_marker.color.r = 1.0
+            self.unified_marker.color.g = 0.0
+            self.unified_marker.color.b = 0.0
+        elif self.robot_name == 'tb3_1':
+            self.unified_marker.color.r = 0.0
+            self.unified_marker.color.g = 1.0
+            self.unified_marker.color.b = 0.0
+        else:  # tb3_2
+            self.unified_marker.color.r = 0.0
+            self.unified_marker.color.g = 0.0
+            self.unified_marker.color.b = 1.0
+        
+        self.unified_marker.color.a = 0.8
+        self.unified_marker.points = []
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         # 初始化可視化標記
         self.points_marker = self.create_points_marker()
         self.line_marker = self.create_line_marker()
@@ -294,6 +353,37 @@ class LocalRRTDetector(Node):
             msg.point.z = 0.0
             self.frontier_pub.publish(msg)
             
+
+            # 添加到unified marker並發布
+            p = Point()
+            p.x = float(point[0])
+            p.y = float(point[1])
+            p.z = 0.0
+            
+            # 檢查重複點
+            for existing_point in self.unified_marker.points:
+                dist = np.sqrt(
+                    (existing_point.x - p.x)**2 + 
+                    (existing_point.y - p.y)**2
+                )
+                if dist < 0.5:  # 最小距離閾值
+                    return
+            
+            if len(self.unified_marker.points) > self.MAX_FRONTIERS:
+                self.unified_marker.points.pop(0)
+            self.unified_marker.points.append(p)
+            
+            # 發布到統一topic
+            marker_array = MarkerArray()
+            self.unified_marker.header.stamp = self.get_clock().now().to_msg()
+            marker_array.markers = [self.unified_marker]
+            self.unified_frontier_pub.publish(marker_array)
+
+
+
+
+
+
             # 發布調試信息
             debug_msg = String()
             debug_msg.data = f'Found new frontier at: ({point[0]:.2f}, {point[1]:.2f})'

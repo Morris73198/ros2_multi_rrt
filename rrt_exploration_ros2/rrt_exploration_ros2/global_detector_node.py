@@ -72,6 +72,13 @@ class GlobalRRTDetector(Node):
             10
         )
 
+
+        self.found_frontiers_pub = self.create_publisher(
+            MarkerArray,
+            '/found',
+            10
+        )
+
         # 初始化可视化标记
         self.init_markers()
 
@@ -152,6 +159,33 @@ class GlobalRRTDetector(Node):
         self.start_marker.color.b = 0.0
         self.start_marker.color.a = 1.0
         self.marker_array.markers.append(self.start_marker)
+
+
+
+
+        # 初始化 found frontiers marker array
+        self.found_frontiers_markers = MarkerArray()
+        self.found_marker = Marker()
+        self.found_marker.header.frame_id = 'map'
+        self.found_marker.ns = "found_frontiers"
+        self.found_marker.id = 0
+        self.found_marker.type = Marker.SPHERE_LIST
+        self.found_marker.action = Marker.ADD
+        self.found_marker.pose.orientation.w = 1.0
+        self.found_marker.scale.x = 0.2
+        self.found_marker.scale.y = 0.2
+        self.found_marker.scale.z = 0.2
+        self.found_marker.color.r = 1.0
+        self.found_marker.color.g = 0.0
+        self.found_marker.color.b = 0.0
+        self.found_marker.color.a = 0.8
+        self.found_marker.points = []
+        self.found_frontiers_markers.markers.append(self.found_marker)
+
+
+
+
+
 
     def map_callback(self, msg):
         """地图数据回调"""
@@ -418,6 +452,13 @@ class GlobalRRTDetector(Node):
         
         self.marker_array.markers[2] = self.frontier_marker
         self.marker_pub.publish(self.marker_array)
+
+
+        # 新增: 發布到 /found topic
+        self.found_marker.header.stamp = self.get_clock().now().to_msg()
+        self.found_marker.points.append(p)
+        self.found_frontiers_markers.markers[0] = self.found_marker
+        self.found_frontiers_pub.publish(self.found_frontiers_markers)
 
         self.frontier_count += 1
         self.get_logger().info(f'Found frontier {self.frontier_count}: ({point[0]:.2f}, {point[1]:.2f})')
