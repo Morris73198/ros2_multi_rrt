@@ -549,7 +549,7 @@ class LocalRRTDetector(Node):
                 elif path_status == 1:  # 有效路徑
                     self.V.append(x_new)
                     self.parents[str(x_new)] = x_nearest
-                    self.get_logger().info(f'Added new point to tree: {x_new}')
+                    # self.get_logger().info(f'Added new point to tree: {x_new}')
                     break
                     
             # 控制樹的大小
